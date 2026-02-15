@@ -1,6 +1,17 @@
 # Customer Spend Monitor
 
-Daily spend alert system for Telnyx CSMs. Compares each customer's current-month revenue pace against prior month, flags significant changes, and surfaces a "Customers to Watch" list based on escalations, stale tickets, and vanishing line items.
+Daily spend alerts comparing current month revenue pace vs prior month for each customer. Know who's growing, who's declining, and why — before it becomes a problem.
+
+**What it does:**
+- ✅ Flags customers growing 15%+
+- 🚨 Flags customers declining 10%+
+- 🔍 Drills into service-level breakdown for big movers to explain WHY
+- ⚠️ "Customers to Watch" section — flags recent escalations, stale tickets, disappearing billing line items
+- 🔄 Dual data source — Tableau primary with A2A billing agent fallback for resilience
+
+**To set up, you'll need:**
+- Your Tableau PAT (personal access token)
+- Customer list with Tableau display names
 
 ## How It Works
 
