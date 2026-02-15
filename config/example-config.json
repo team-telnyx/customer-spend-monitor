@@ -1,0 +1,52 @@
+{
+  "customers": [
+    {
+      "name": "ringba",
+      "tableau_url_name": "Ringba",
+      "display_name": "Ringba"
+    },
+    {
+      "name": "doximity",
+      "tableau_url_name": "Doximity",
+      "display_name": "Doximity"
+    },
+    {
+      "name": "call-box",
+      "tableau_url_name": "Call+Box",
+      "display_name": "Call Box"
+    },
+    {
+      "name": "audiocodes",
+      "tableau_url_name": "AudioCodes",
+      "display_name": "AudioCodes"
+    }
+  ],
+  "tableau": {
+    "server": "tableau.example.com",
+    "site": "YourSite",
+    "pat_name": "your-pat-name",
+    "api_version": "3.24",
+    "views": {
+      "monthly_revenue": "00000000-0000-0000-0000-000000000001",
+      "daily_revenue": "00000000-0000-0000-0000-000000000002",
+      "service_breakdown": "00000000-0000-0000-0000-000000000003"
+    }
+  },
+  "slack": {
+    "dm_channel": "D000000SLACK"
+  },
+  "telegram": {
+    "chat_id": ""
+  },
+  "a2a": {
+    "billing_url": "http://revenue-agents.query.prod.telnyx.io:8000/a2a/billing-account/rpc"
+  },
+  "thresholds": {
+    "growth_pct": 15,
+    "decline_pct": -10,
+    "watch_drop_pct": -25,
+    "escalation_count": 3
+  },
+  "escalation_tracker_path": "/path/to/escalation-tracker.json",
+  "engdesk_tracker_glob": "/path/to/engdesk/ENGDESK-*.json"
+}
