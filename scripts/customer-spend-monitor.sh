@@ -49,7 +49,7 @@ missing_fields=()
 if [[ "$(jq 'has("customers") and (.customers | type == "array")' "$CONFIG_PATH")" != "true" ]]; then
   missing_fields+=("customers (array)")
 fi
-if [[ "$(jq 'has("tableau") and (.tableau | has("server","pat_name","views"))' "$CONFIG_PATH")" != "true" ]]; then
+if [[ "$(jq 'has("tableau") and (.tableau | (has("server") and has("pat_name") and has("views")))' "$CONFIG_PATH")" != "true" ]]; then
   missing_fields+=("tableau (server, pat_name, views)")
 fi
 if [[ "$(jq 'has("slack") and (.slack | has("dm_channel"))' "$CONFIG_PATH")" != "true" ]]; then
