@@ -138,8 +138,9 @@ tableau_auth() {
     -H "Content-Type: application/json" \
     -d "$auth_payload") || { echo "WARNING: Tableau auth failed, using A2A fallback" >&2; return 1; }
 
-  TABLEAU_TOKEN=$(echo "$response" | jq -r '.credentials.token // empty')
-  TABLEAU_SITE_ID=$(echo "$response" | jq -r '.credentials.site.id // empty')
+  # Tableau returns XML, not JSON — parse with sed
+  TABLEAU_TOKEN=$(echo "$response" | sed -n 's/.*token="\([^"]*\).*/\1/p')
+  TABLEAU_SITE_ID=$(echo "$response" | sed -n 's/.*site id="\([^"]*\).*/\1/p')
 
   if [[ -z "$TABLEAU_TOKEN" ]]; then
     echo "WARNING: Tableau auth returned no token, using A2A fallback" >&2
@@ -161,7 +162,7 @@ tableau_view_data() {
     url="${url}?vf_${filter_name}=${filter_value}"
   fi
 
-  retry_curl -H "X-Tableau-Auth: ${TABLEAU_TOKEN}" "$url" || return 1
+  retry_curl -H "X-Tableau-Auth: ${TABLEAU_TOKEN}" -H "Accept: application/json" "$url" || return 1
 }
 
 # --- A2A fallback query ---
@@ -225,19 +226,26 @@ format_dollars() {
 
 # --- Get revenue for a customer (Tableau primary, A2A fallback) ---
 get_customer_revenue() {
-  local customer_name="$1" tableau_url_name="$2" month="$3"
+  local customer_name="$1" org_id="$2" month="$3"
 
-  # Try Tableau first
-  if [[ "$TABLEAU_AVAILABLE" == "true" ]]; then
+  # Try Tableau first — filter by User Id (org UUID)
+  if [[ "$TABLEAU_AVAILABLE" == "true" && -n "$org_id" ]]; then
     local data
-    data=$(tableau_view_data "$VIEW_MONTHLY" "Account+Name" "$tableau_url_name" 2>/dev/null) || true
+    data=$(tableau_view_data "$VIEW_MONTHLY" "User+Id" "$org_id" 2>/dev/null) || true
     if [[ -n "$data" ]]; then
-      # Parse Tableau CSV/JSON response for the target month
-      local revenue
-      revenue=$(echo "$data" | grep -i "$month" | head -1 | grep -oE '[0-9,]+\.?[0-9]*' | tail -1 || echo "")
-      if [[ -n "$revenue" ]]; then
-        echo "$revenue" | tr -d ','
-        return 0
+      # Parse the "Amount" row for the target month from the Retention view
+      # Format: Amount,January 2026,AMER,Base,<user_id>,<row>,<value>
+      local month_label
+      month_label=$(date -j -f '%Y-%m' "$month" '+%B %Y' 2>/dev/null || date -d "${month}-01" '+%B %Y' 2>/dev/null || echo "")
+      if [[ -n "$month_label" ]]; then
+        local revenue
+        # CSV has quoted fields with commas inside (e.g. "158,734.17")
+        # The Amount (last field) is the value we want — extract it properly
+        revenue=$(echo "$data" | grep "^Amount," | grep "$month_label" | awk -F'"' '{if(NF>1) print $(NF-1); else {n=split($0,a,","); print a[n]}}' | tr -d ',' | head -1 || echo "")
+        if [[ -n "$revenue" && "$revenue" != "0" ]]; then
+          echo "$revenue"
+          return 0
+        fi
       fi
     fi
   fi
@@ -245,19 +253,20 @@ get_customer_revenue() {
   # Fallback to A2A
   local ts
   ts=$(date +%s)
+  local query_id="${org_id:-$customer_name}"
   local response
   response=$(a2a_query "spend-${ts}-${customer_name}" \
-    "What is the total revenue for ${customer_name} for month ${month}?")
+    "What is the total revenue for org ${query_id} for month ${month}? Just the dollar amount.")
   extract_revenue "$response"
 }
 
 # --- Get daily revenue data for prorating ---
 get_daily_data() {
-  local customer_name="$1" tableau_url_name="$2"
+  local customer_name="$1" org_id="$2"
 
-  if [[ "$TABLEAU_AVAILABLE" == "true" ]]; then
+  if [[ "$TABLEAU_AVAILABLE" == "true" && -n "$org_id" ]]; then
     local data
-    data=$(tableau_view_data "$VIEW_DAILY" "Account+Name" "$tableau_url_name" 2>/dev/null) || true
+    data=$(tableau_view_data "$VIEW_DAILY" "user_id" "$org_id" 2>/dev/null) || true
     if [[ -n "$data" ]]; then
       echo "$data"
       return 0
@@ -268,11 +277,11 @@ get_daily_data() {
 
 # --- Get service-level breakdown for big movers ---
 get_service_breakdown() {
-  local customer_name="$1" tableau_url_name="$2"
+  local customer_name="$1" org_id="$2"
 
-  if [[ "$TABLEAU_AVAILABLE" == "true" && -n "$VIEW_SERVICE" ]]; then
+  if [[ "$TABLEAU_AVAILABLE" == "true" && -n "$VIEW_SERVICE" && -n "$org_id" ]]; then
     local data
-    data=$(tableau_view_data "$VIEW_SERVICE" "Account+Name" "$tableau_url_name" 2>/dev/null) || true
+    data=$(tableau_view_data "$VIEW_SERVICE" "User+Id" "$org_id" 2>/dev/null) || true
     if [[ -n "$data" ]]; then
       echo "$data"
       return 0
@@ -305,6 +314,8 @@ for i in $(seq 0 $((CUSTOMER_COUNT - 1))); do
   name=$(jq -r ".customers[$i].name" "$CONFIG_PATH")
   tableau_url_name=$(jq -r ".customers[$i].tableau_url_name" "$CONFIG_PATH")
   display_name=$(jq -r ".customers[$i].display_name" "$CONFIG_PATH")
+  org_id=$(jq -r ".customers[$i].org_id // empty" "$CONFIG_PATH")
+  additional_orgs=$(jq -r ".customers[$i].additional_org_ids // [] | .[]" "$CONFIG_PATH" 2>/dev/null)
 
   # Filter if --customer specified
   if [[ -n "$FILTER_CUSTOMER" && "$name" != "$FILTER_CUSTOMER" && "$display_name" != "$FILTER_CUSTOMER" ]]; then
@@ -318,13 +329,21 @@ for i in $(seq 0 $((CUSTOMER_COUNT - 1))); do
     continue
   fi
 
-  # Get current MTD revenue
-  current_mtd=$(get_customer_revenue "$name" "$tableau_url_name" "$CURRENT_MONTH")
+  # Get current MTD revenue (primary org)
+  current_mtd=$(get_customer_revenue "$name" "$org_id" "$CURRENT_MONTH")
   current_mtd="${current_mtd:-0}"
 
-  # Get prior month total revenue
-  prior_total=$(get_customer_revenue "$name" "$tableau_url_name" "$PRIOR_MONTH")
+  # Get prior month total revenue (primary org)
+  prior_total=$(get_customer_revenue "$name" "$org_id" "$PRIOR_MONTH")
   prior_total="${prior_total:-0}"
+
+  # Add revenue from additional org IDs (e.g. UJET prod, Combined Public managed)
+  for extra_org in $additional_orgs; do
+    extra_current=$(get_customer_revenue "${name}-extra" "$extra_org" "$CURRENT_MONTH")
+    extra_prior=$(get_customer_revenue "${name}-extra" "$extra_org" "$PRIOR_MONTH")
+    current_mtd=$(echo "scale=2; $current_mtd + ${extra_current:-0}" | bc -l)
+    prior_total=$(echo "scale=2; $prior_total + ${extra_prior:-0}" | bc -l)
+  done
 
   # Prorate prior month to current day
   if (( $(echo "$prior_total > 0 && $PRIOR_MONTH_DAYS > 0" | bc -l) )); then
@@ -379,7 +398,7 @@ for i in $(seq 0 $((CUSTOMER_COUNT - 1))); do
   # --- Big movers: get service-level breakdown ---
   abs_change=${change_pct_int#-}
   if (( abs_change > 50 )); then
-    breakdown=$(get_service_breakdown "$name" "$tableau_url_name")
+    breakdown=$(get_service_breakdown "$name" "$org_id")
     if [[ -n "$breakdown" ]]; then
       # Parse top contributing service from breakdown
       # This is a simplified parse; real data would need column mapping
